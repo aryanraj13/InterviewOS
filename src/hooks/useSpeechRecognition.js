@@ -1,31 +1,28 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Scribe, RealtimeEvents, CommitStrategy } from "@elevenlabs/client";
+
+const API_URL = import.meta.env.VITE_API_URL;
 
 export default function useSpeechRecognition({
   onTranscriptChange,
   onSilence,
-  silenceDuration = 3000,
+  silenceDuration = 1800,
 } = {}) {
-  const recognitionRef = useRef(null);
+  const connectionRef = useRef(null);
 
-  const committedTranscriptRef = useRef('');
-  const interimTranscriptRef = useRef('');
+  const onTranscriptChangeRef = useRef(onTranscriptChange);
+  const onSilenceRef = useRef(onSilence);
+
+  const committedTranscriptRef = useRef("");
+  const partialTranscriptRef = useRef("");
 
   const silenceTimerRef = useRef(null);
   const hasSpokenRef = useRef(false);
   const silenceTriggeredRef = useRef(false);
 
-  const onTranscriptChangeRef = useRef(onTranscriptChange);
-  const onSilenceRef = useRef(onSilence);
-
-  const [transcript, setTranscript] = useState('');
+  const [transcript, setTranscript] = useState("");
   const [isListening, setIsListening] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState("");
 
   useEffect(() => {
     onTranscriptChangeRef.current = onTranscriptChange;
@@ -35,247 +32,194 @@ export default function useSpeechRecognition({
     onSilenceRef.current = onSilence;
   }, [onSilence]);
 
-  const appendTranscript = (base, chunk) => {
-    const normalizedBase = base.trimEnd();
-    const normalizedChunk = chunk.trim();
-
-    if (!normalizedChunk) return normalizedBase;
-    if (!normalizedBase) return normalizedChunk;
-
-    return `${normalizedBase} ${normalizedChunk}`;
-  };
-
-  const isSupported = useMemo(() => {
-    if (typeof window === 'undefined') return false;
-
-    return Boolean(
-      window.SpeechRecognition ||
-        window.webkitSpeechRecognition
-    );
-  }, []);
-
   const clearSilenceTimer = useCallback(() => {
     if (silenceTimerRef.current) {
-      window.clearTimeout(silenceTimerRef.current);
+      clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
   }, []);
 
-  const scheduleSilenceDetection = useCallback(() => {
-    clearSilenceTimer();
-
-    if (!hasSpokenRef.current) {
+  const finishAnswer = useCallback(() => {
+    if (
+      !hasSpokenRef.current ||
+      silenceTriggeredRef.current
+    ) {
       return;
     }
 
-    silenceTimerRef.current = window.setTimeout(() => {
-      if (
-        !recognitionRef.current ||
-        !hasSpokenRef.current ||
-        silenceTriggeredRef.current
-      ) {
-        return;
-      }
+    const finalAnswer = [
+      committedTranscriptRef.current,
+      partialTranscriptRef.current,
+    ]
+      .join(" ")
+      .trim();
 
-      silenceTriggeredRef.current = true;
+    if (!finalAnswer) return;
 
-      try {
-        recognitionRef.current.stop();
-      } catch {
-        // Ignore stop errors.
-      }
+    silenceTriggeredRef.current = true;
 
-      setIsListening(false);
+    onSilenceRef.current?.(finalAnswer);
 
-      const finalAnswer = appendTranscript(
-        committedTranscriptRef.current,
-        interimTranscriptRef.current
-      ).trim();
+    connectionRef.current?.close();
+    connectionRef.current = null;
 
-      if (finalAnswer) {
-        onSilenceRef.current?.(finalAnswer);
-      }
+    setIsListening(false);
+  }, []);
+
+  const scheduleSilence = useCallback(() => {
+    clearSilenceTimer();
+
+    silenceTimerRef.current = setTimeout(() => {
+      finishAnswer();
     }, silenceDuration);
-  }, [clearSilenceTimer, silenceDuration]);
-
-  useEffect(() => {
-    if (!isSupported || typeof window === 'undefined') {
-      return undefined;
-    }
-
-    const Recognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
-
-    const recognition = new Recognition();
-
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onstart = () => {
-      setIsListening(true);
-      setError('');
-    };
-
-    recognition.onresult = (event) => {
-      let interimText = '';
-      let finalText = '';
-
-      for (
-        let index = event.resultIndex;
-        index < event.results.length;
-        index += 1
-      ) {
-        const result = event.results[index];
-        const chunk = result[0]?.transcript || '';
-
-        if (result.isFinal) {
-          finalText += chunk;
-        } else {
-          interimText += chunk;
-        }
-      }
-
-      if (finalText) {
-        committedTranscriptRef.current =
-          appendTranscript(
-            committedTranscriptRef.current,
-            finalText
-          );
-
-        hasSpokenRef.current = true;
-      }
-
-      if (interimText.trim()) {
-        hasSpokenRef.current = true;
-      }
-
-      interimTranscriptRef.current =
-        interimText.trim();
-
-      const nextTranscript = appendTranscript(
-        committedTranscriptRef.current,
-        interimTranscriptRef.current
-      );
-
-      setTranscript(nextTranscript);
-
-      onTranscriptChangeRef.current?.(
-        nextTranscript
-      );
-
-      /*
-       * Every time speech activity is detected,
-       * restart the silence countdown.
-       */
-      if (hasSpokenRef.current) {
-        scheduleSilenceDetection();
-      }
-    };
-
-    recognition.onerror = (event) => {
-      clearSilenceTimer();
-
-      if (
-        event.error === 'not-allowed' ||
-        event.error === 'service-not-allowed'
-      ) {
-        setError(
-          'Microphone access was denied. You can still type your answer.'
-        );
-      } else if (event.error === 'network') {
-        setError(
-          'Speech recognition network error. You can still type your answer.'
-        );
-      } else if (event.error !== 'aborted') {
-        setError(
-          'Voice recognition encountered an error. You can still type your answer.'
-        );
-      }
-
-      setIsListening(false);
-    };
-
-    recognition.onend = () => {
-      clearSilenceTimer();
-      setIsListening(false);
-    };
-
-    recognitionRef.current = recognition;
-
-    return () => {
-      clearSilenceTimer();
-
-      try {
-        recognition.stop();
-      } catch {
-        // Ignore cleanup errors.
-      }
-
-      recognitionRef.current = null;
-    };
-  }, [
-    isSupported,
-    clearSilenceTimer,
-    scheduleSilenceDetection,
-  ]);
+  }, [clearSilenceTimer, finishAnswer, silenceDuration]);
 
   const startListening = useCallback(
-    (seed = '') => {
-      if (
-        !isSupported ||
-        !recognitionRef.current
-      ) {
-        setError(
-          'Voice input is not supported in this browser. Please type your answer.'
-        );
-        return;
-      }
-
-      clearSilenceTimer();
-
-      committedTranscriptRef.current =
-        seed.trim();
-
-      interimTranscriptRef.current = '';
-
-      hasSpokenRef.current = Boolean(
-        seed.trim()
-      );
-
-      silenceTriggeredRef.current = false;
-
-      setTranscript(
-        committedTranscriptRef.current
-      );
-
-      onTranscriptChangeRef.current?.(
-        committedTranscriptRef.current
-      );
-
-      setError('');
-
+    async (seed = "") => {
       try {
-        recognitionRef.current.start();
-        setIsListening(true);
-      } catch {
-        setError(
-          'Voice recording could not start. Please try again.'
+        clearSilenceTimer();
+
+        connectionRef.current?.close();
+
+        committedTranscriptRef.current = seed.trim();
+        partialTranscriptRef.current = "";
+
+        hasSpokenRef.current = false;
+        silenceTriggeredRef.current = false;
+
+        setTranscript(seed.trim());
+        setError("");
+
+        const response = await fetch(
+          `${API_URL}/api/voice/scribe-token`
         );
+
+        const data = await response.json();
+
+        if (!response.ok || !data.token) {
+          throw new Error(
+            data.error || "Unable to create Scribe token"
+          );
+        }
+
+        const connection = Scribe.connect({
+          token: data.token,
+          modelId: "scribe_v2_realtime",
+          commitStrategy: CommitStrategy.VAD,
+          vadSilenceThresholdSecs: 1.5,
+          microphone: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+
+        connectionRef.current = connection;
+
+        connection.on(
+          RealtimeEvents.SESSION_STARTED,
+          () => {
+            setIsListening(true);
+            setError("");
+          }
+        );
+
+        connection.on(
+          RealtimeEvents.PARTIAL_TRANSCRIPT,
+          (data) => {
+            const text = data.text?.trim();
+
+            if (!text) return;
+
+            hasSpokenRef.current = true;
+            partialTranscriptRef.current = text;
+
+            const combined = [
+              committedTranscriptRef.current,
+              partialTranscriptRef.current,
+            ]
+              .join(" ")
+              .trim();
+
+            setTranscript(combined);
+
+            onTranscriptChangeRef.current?.(combined);
+
+            scheduleSilence();
+          }
+        );
+
+        connection.on(
+          RealtimeEvents.COMMITTED_TRANSCRIPT,
+          (data) => {
+            const text = data.text?.trim();
+
+            if (!text) return;
+
+            hasSpokenRef.current = true;
+
+            committedTranscriptRef.current = [
+              committedTranscriptRef.current,
+              text,
+            ]
+              .join(" ")
+              .trim();
+
+            partialTranscriptRef.current = "";
+
+            setTranscript(
+              committedTranscriptRef.current
+            );
+
+            onTranscriptChangeRef.current?.(
+              committedTranscriptRef.current
+            );
+
+            scheduleSilence();
+          }
+        );
+
+        connection.on(
+          RealtimeEvents.ERROR,
+          (error) => {
+            console.error(
+              "ElevenLabs Scribe error:",
+              error
+            );
+
+            setError(
+              "Speech recognition error. Please try again."
+            );
+
+            setIsListening(false);
+          }
+        );
+
+        connection.on("close", () => {
+          setIsListening(false);
+        });
+      } catch (error) {
+        console.error(
+          "Scribe connection error:",
+          error
+        );
+
+        setError(
+          error.message ||
+            "Unable to start speech recognition."
+        );
+
+        setIsListening(false);
       }
     },
-    [isSupported, clearSilenceTimer]
+    [clearSilenceTimer, scheduleSilence]
   );
 
   const stopListening = useCallback(() => {
     clearSilenceTimer();
 
-    try {
-      recognitionRef.current?.stop();
-    } catch {
-      // Ignore stop errors.
-    }
+    connectionRef.current?.close();
+    connectionRef.current = null;
 
     setIsListening(false);
   }, [clearSilenceTimer]);
@@ -283,32 +227,26 @@ export default function useSpeechRecognition({
   const resetTranscript = useCallback(() => {
     clearSilenceTimer();
 
-    committedTranscriptRef.current = '';
-    interimTranscriptRef.current = '';
+    committedTranscriptRef.current = "";
+    partialTranscriptRef.current = "";
 
     hasSpokenRef.current = false;
     silenceTriggeredRef.current = false;
 
-    setTranscript('');
-    setError('');
+    setTranscript("");
   }, [clearSilenceTimer]);
 
   useEffect(() => {
     return () => {
       clearSilenceTimer();
-
-      try {
-        recognitionRef.current?.stop();
-      } catch {
-        // Ignore cleanup errors.
-      }
+      connectionRef.current?.close();
     };
   }, [clearSilenceTimer]);
 
   return {
     transcript,
     isListening,
-    isSupported,
+    isSupported: true,
     startListening,
     stopListening,
     resetTranscript,

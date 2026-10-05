@@ -10,6 +10,7 @@
     "server": "npm --prefix server start"
   },
   "dependencies": {
+    "@elevenlabs/client": "^1.26.0",
     "framer-motion": "^11.11.8",
     "lucide-react": "^0.462.0",
     "react": "^18.3.1",

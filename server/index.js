@@ -11,6 +11,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import interviewRouter from './routes/interview.js';
 import aiInterviewRouter from './routes/aiInterview.js';
+import voiceRoutes from "./voiceRoutes.js";
 
 dotenv.config();
 
@@ -36,6 +37,7 @@ app.get('/api/health', (_request, response) => {
 
 app.use('/api/interview', interviewRouter);
 app.use('/api/ai-interview', aiInterviewRouter);
+app.use("/api/voice", voiceRoutes);
 
 app.use((error, _request, response, _next) => {
   const status = error.status || 500;

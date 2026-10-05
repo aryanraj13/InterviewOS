@@ -1,49 +1,77 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from "react";
+
+const API_URL = import.meta.env.VITE_API_URL;
 
 export default function useSpeechSynthesis() {
-  const utteranceRef = useRef(null);
+  const audioRef = useRef(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
-  const isSupported = useMemo(() => {
-    if (typeof window === 'undefined') return false;
-    return Boolean(window.speechSynthesis && window.SpeechSynthesisUtterance);
+  const stop = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+
+    setIsSpeaking(false);
   }, []);
 
-  const stop = useCallback(() => {
-    if (!isSupported || typeof window === 'undefined') return;
-    window.speechSynthesis.cancel();
-    setIsSpeaking(false);
-  }, [isSupported]);
+  const speak = useCallback(
+    async (text, onEnd) => {
+      if (!text?.trim()) return;
 
-  const speak = useCallback((text, onEnd) => {
-  if (!isSupported || typeof window === 'undefined' || !text?.trim()) {
-    return;
-  }
+      stop();
 
-  window.speechSynthesis.cancel();
+      try {
+        setIsSpeaking(true);
 
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = 'en-US';
-  utterance.rate = 1;
-  utterance.pitch = 1;
+        const response = await fetch(`${API_URL}/api/voice/speak`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text: text.trim(),
+          }),
+        });
 
-  utterance.onstart = () => setIsSpeaking(true);
+        if (!response.ok) {
+          throw new Error("Failed to generate speech");
+        }
 
-  utterance.onend = () => {
-    setIsSpeaking(false);
-    onEnd?.();
-  };
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
 
-  utterance.onerror = () => setIsSpeaking(false);
+        const audio = new Audio(audioUrl);
+        audioRef.current = audio;
 
-  utteranceRef.current = utterance;
-  window.speechSynthesis.speak(utterance);
-}, [isSupported]);
+        audio.onended = () => {
+          URL.revokeObjectURL(audioUrl);
+          audioRef.current = null;
+          setIsSpeaking(false);
+
+          onEnd?.();
+        };
+
+        audio.onerror = () => {
+          URL.revokeObjectURL(audioUrl);
+          audioRef.current = null;
+          setIsSpeaking(false);
+        };
+
+        await audio.play();
+      } catch (error) {
+        console.error("ElevenLabs TTS error:", error);
+        setIsSpeaking(false);
+      }
+    },
+    [stop]
+  );
 
   return {
     speak,
     stop,
     isSpeaking,
-    isSupported,
+    isSupported: true,
   };
 }
